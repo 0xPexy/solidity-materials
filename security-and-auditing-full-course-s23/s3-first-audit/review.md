@@ -1,4 +1,4 @@
-# Smart Contract Security Review: In-depth Phases and Best Practices
+# Session 3 Review: In-depth Phases and Best Practices
 This document provides a detailed breakdown of the smart contract security review process, from initial scoping to final reporting, emphasizing best practices and security considerations at each stage.
 
 ## **1. Isolated Development Containers**
