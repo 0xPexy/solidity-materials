@@ -107,3 +107,90 @@ This function is designed purely for "receiving Ether." If Ether is sent via `tr
     2. Alternatively, when Ether is sent and the call data is empty, **IF** a `receive()` function does not exist.
 - **Purpose:**
 The `fallback()` function plays a crucial role, especially in **Proxy Patterns**. When a proxy contract delegates calls to a logic contract, any function call not defined in the proxy is forwarded through its `fallback()` function to the logic contract. It can also be used to perform specific logic when a contract receives an unexpected call. Adding the `payable` keyword allows it to receive Ether.
+
+## 5. ABI and Encoding
+
+### Overview
+
+- **Application Binary Interface (ABI)** is the canonical specification that tells every caller—EOA, contract, or off‑chain client—**how to encode function arguments, decode return values, and interpret events**.
+- A transaction’s **calldata** is therefore opaque without the ABI; it is merely a sequence of bytes.
+- Because layouts are fixed, **function signatures must be completely typed at compile time**. There is no runtime reflection or ad‑hoc overloading.
+
+### Function Selector
+
+| Item | Detail |
+| --- | --- |
+| Definition | `keccak256("name(type1,type2,…)")` → first **4 bytes** |
+| Placement | Calldata **bytes 0–3** |
+| Return types | *Not* included in the hash (they live only in the JSON ABI) |
+
+```solidity
+bytes4 selector = bytes4(keccak256("transfer(address,uint256)")); // 0xa9059cbb
+
+```
+
+### Parameter Encoding (standard ABI)
+
+| Type class | Encoding rule |
+| --- | --- |
+| **Static types** (`uint256`, `address`, `bool`, …) | 32‑byte word, left‑padded (or sign‑extended for signed ints) |
+| **Dynamic types** (`bytes`, `string`, dynamic arrays) | 32‑byte **offset** inside calldata → at that offset: `length` (32 bytes) followed by data, padded to 32‑byte boundary |
+
+### Worked Example
+
+The call `sam("dave", true, [1,2,3])` for the `Foo` contract yields the following calldata:
+
+1. **Function selector** – `0xa5643bf2` (`sam(bytes,bool,uint256[])`)
+2. **Offset** to string (96 bytes → `0x60`)
+3. `true` → `0x…01`
+4. **Offset** to array (160 bytes → `0xa0`)
+5. String length 4
+6. UTF‑8 bytes `"dave"` + padding
+7. Array length 3
+    
+    8‑10. Elements 1, 2, 3 (each 32 bytes)
+    
+
+```
+a5643bf2 000000…60 000…01 000…a0 000…04 64617665 000… 000…03 000…01 000…02 000…03
+
+```
+
+### Packed Encoding
+
+| Function | Behaviour | Use‑case |
+| --- | --- | --- |
+| `abi.encode` | Full 32‑byte alignment, **decodable via `abi.decode`** | Inter‑contract calls, storage blobs |
+| `abi.encodePacked` | Tight, in‑place packing—**no length, no padding** | Hash/key generation, gas‑critical contexts |
+| `abi.encodeWithSignature` / `abi.encodeWithSelector` | Prepends selector, then uses `abi.encode` | Low‑level `.call` payloads |
+
+> ⚠️ Hash collision risk: abi.encodePacked("a","bc") equals abi.encodePacked("ab","c") → always insert a delimiter or use full ABI encoding for multiple dynamic fields.
+> 
+
+## 6. `SELFDESTRUCT`
+
+### Historical Behavior
+
+| Stage | Behavior |
+| --- | --- |
+| Pre‑London | Delete bytecode, *and* refund up to 24 240 gas, transfer ETH |
+| **EIP‑3529 (London, 2021‑08)** | Gas refund **removed** |
+| **EIP‑6049 (Shanghai, 2023‑04)** | Marked *deprecated* – warning in specs |
+| **EIP‑6780 (Dencun, 2024‑03)** | Only valid **in the same tx that created the contract**. Otherwise: bytecode stays, ETH can be swept, no gas refund |
+
+### Practical Implications
+
+- No longer a reliable way to “upgrade” or erase logic → use **Proxy (ERC‑1967/1167) or Diamond (ERC‑2535)** patterns instead.
+- Front‑end should not assume a contract disappears — after Dencun it usually persists.
+
+## 7. Visibility Modifiers
+
+| Modifier | Callable from | Notes |
+| --- | --- | --- |
+| `public` | Internal & external | Internally via `f()`, externally via ABI |
+| `external` | Externally (or `this.f()` internally) | Cheaper gas: calldata not copied to memory |
+| `internal` | Contract + derivatives | Equivalent to OOP `protected` |
+| `private` | Declaring contract only | Bytecode still visible on‑chain |
+
+> Tip : For library‑style helper functions that don’t modify state, mark them internal and add the pure or view mutability specifier to enable maximum optimisation.
+>
