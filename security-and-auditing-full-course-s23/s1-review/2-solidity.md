@@ -192,5 +192,5 @@ a5643bf2 000000…60 000…01 000…a0 000…04 64617665 000… 000…03 000…0
 | `internal` | Contract + derivatives | Equivalent to OOP `protected` |
 | `private` | Declaring contract only | Bytecode still visible on‑chain |
 
-> Tip : For library‑style helper functions that don’t modify state, mark them internal and add the pure or view mutability specifier to enable maximum optimisation.
+> Tip : For library‑style helper functions that don’t modify state, mark them internal and add the pure or view mutability specifier to enable maximum optimization.
 >
