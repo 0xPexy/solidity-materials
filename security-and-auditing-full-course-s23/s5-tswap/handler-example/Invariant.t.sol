@@ -2,63 +2,71 @@
 pragma solidity 0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {console} from "forge-std/console.sol";
-import {HandlerStatefulFuzzCatches} from "../../src/invariant-break/HandlerStatefulFuzzCatches.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
-import {MockUSDC} from "../mocks/MockUSDC.sol";
-import {YieldERC20} from "../mocks/WeirdERC20.sol";
+import {HandlerStatefulFuzzCatches} from "../../../src/invariant-break/HandlerStatefulFuzzCatches.sol";
+import {YieldERC20} from "../../mocks/YieldERC20.sol";
+import {MockUSDC} from "../../mocks/MockUSDC.sol";
+import {MyHandler} from "./MyHandler.t.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {Handler} from "./Handler.t.sol";
 
-contract HandlerCatchesTest is StdInvariant, Test {
-    HandlerStatefulFuzzCatches sfc;
-    MockUSDC musdc;
-    YieldERC20 yerc;
+contract MyInvariant is StdInvariant, Test {
     address user = makeAddr("user");
-    IERC20[] public supportedTokens;
-    uint256 public initAmount;
-    Handler h;
+    address owner = makeAddr("owner");
+    YieldERC20 yerc;
+    MockUSDC usdc;
+    uint initAmount;
+    IERC20[] supportedTokens;
+    HandlerStatefulFuzzCatches hsfc;
+    MyHandler handler;
 
     function setUp() public {
-        vm.startPrank(user);
+        vm.startPrank(owner);
         yerc = new YieldERC20();
-        initAmount = yerc.INITIAL_SUPPLY();
-        musdc = new MockUSDC();
-        musdc.mint(user, initAmount);
-
-        supportedTokens.push(musdc);
+        initAmount = yerc.balanceOf(owner);
+        yerc.transfer(user, initAmount);
+        usdc = new MockUSDC();
+        usdc.mint(user, initAmount);
         supportedTokens.push(yerc);
-        sfc = new HandlerStatefulFuzzCatches(supportedTokens);
+        supportedTokens.push(usdc);
+        hsfc = new HandlerStatefulFuzzCatches(supportedTokens);
+
+        handler = new MyHandler({
+            _user: user,
+            _yerc: yerc,
+            _usdc: usdc,
+            _hsfc: hsfc
+        });
+
         vm.stopPrank();
-        // targetContract(address(sfc));
-        h = new Handler(sfc, musdc, yerc, user);
+
         bytes4[] memory selectors = new bytes4[](4);
-        selectors[0] = h.depositMUSDC.selector;
-        selectors[1] = h.depositYERC20.selector;
-        selectors[2] = h.withdrawMUSDC.selector;
-        selectors[3] = h.withdrawYERC20.selector;
-
-        targetSelector(FuzzSelector({addr: address(h), selectors: selectors}));
-        targetContract(address(h));
+        selectors[0] = handler.depositYERC.selector;
+        selectors[1] = handler.depositUSDC.selector;
+        selectors[2] = handler.withdrawYERC.selector;
+        selectors[3] = handler.withdrawUSDC.selector;
+        targetContract(address(handler));
+        targetSelector(
+            FuzzSelector({addr: address(handler), selectors: selectors})
+        );
     }
 
-    function testTokenAmount() public {
+    function test_just_balance() public {
+        assert(yerc.balanceOf(owner) == 0);
+        assert(usdc.balanceOf(owner) == 0);
         assert(initAmount == yerc.balanceOf(user));
-        assert(initAmount == musdc.balanceOf(user));
+        assert(initAmount == usdc.balanceOf(user));
     }
 
-    function statefulFuzz_withdraw_fixed() public {
-        vm.startPrank(user);
-        // sfc.withdrawToken(usdc);
-        h.withdrawMUSDC();
-        h.withdrawYERC20();
-        vm.stopPrank();
-
-        assert(initAmount == yerc.balanceOf(user));
-        assert(initAmount == musdc.balanceOf(user));
-
-        assert(yerc.balanceOf(address(sfc))==0);
-        assert(musdc.balanceOf(address(sfc))==0);
+    // sum of user and pool balance should be totalsupply 
+    // assertion error if 'fail_on_revert = false' 
+    // owner address got some ERC20
+    function invariant_balance() public {
+        address pool = address(hsfc);
+        uint yercPool = yerc.balanceOf(pool);
+        uint yercUser = yerc.balanceOf(user);
+        uint usdcPool = usdc.balanceOf(pool);
+        uint usdcUser = usdc.balanceOf(user);
+        assertEq(yercPool + yercUser, yerc.totalSupply());
+        assertEq(usdcPool + usdcUser, usdc.totalSupply());
     }
 }
-//
