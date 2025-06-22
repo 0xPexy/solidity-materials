@@ -48,6 +48,8 @@ contract MyInvariant is StdInvariant, Test {
         targetSelector(
             FuzzSelector({addr: address(handler), selectors: selectors})
         );
+        // i: good for excluding SUT contract itself 
+        excludeContract(address(hsfc));
     }
 
     function test_just_balance() public {
@@ -57,8 +59,8 @@ contract MyInvariant is StdInvariant, Test {
         assert(initAmount == usdc.balanceOf(user));
     }
 
-    // sum of user and pool balance should be totalsupply 
-    // assertion error if 'fail_on_revert = false' 
+    // sum of user and pool balance should be totalsupply
+    // assertion error if 'fail_on_revert = false'
     // owner address got some ERC20
     function invariant_balance() public {
         address pool = address(hsfc);

@@ -8,6 +8,7 @@ import {MockUSDC} from "../../mocks/MockUSDC.sol";
 import {console} from "forge-std/console.sol";
 
 contract MyHandler is Test {
+    // i: can make immutable
     address user;
     YieldERC20 yerc;
     MockUSDC usdc;
@@ -32,11 +33,11 @@ contract MyHandler is Test {
     }
 
     function depositYERC(uint _amount) public useUser {
-        uint amount = bound(_amount, 0, yerc.balanceOf(user));
+        uint amount = bound(_amount, 1, yerc.balanceOf(user));
         yerc.approve(address(hsfc), amount);
         hsfc.depositToken(yerc, amount);
-        // can do function-level assertions also in handler
-        // assertEq(asset.balanceOf(address(this)), beforeBalance - assets);
+        // i: can do function-level assertions also in handler
+        // assertEq(yerc.balanceOf(address(user)), beforeBalance - amount);
     }
 
     function withdrawYERC() public useUser {
@@ -44,7 +45,7 @@ contract MyHandler is Test {
     }
 
     function depositUSDC(uint _amount) public useUser {
-        uint amount = bound(_amount, 0, usdc.balanceOf(user));
+        uint amount = bound(_amount, 1, usdc.balanceOf(user));
         usdc.approve(address(hsfc), amount);
         hsfc.depositToken(usdc, amount);
     }
