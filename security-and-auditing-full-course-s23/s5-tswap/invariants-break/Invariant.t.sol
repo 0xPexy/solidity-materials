@@ -10,72 +10,61 @@ import {PoolFactory} from "../../src/PoolFactory.sol";
 import {Handler} from "./Handler.t.sol";
 
 contract Invariant is StdInvariant, Test {
-    // ERC20, weth
-    ERC20Mock poolToken;
+    // PT, weth
+    ERC20Mock pt;
     ERC20Mock weth;
-
     // PoolFactory, TswapPool
-    PoolFactory poolFactory;
     TSwapPool pool;
+    // constants: INIT AMOUNT of weth, PT
+    uint256 constant INIT_PT = 100e18;
+    uint256 constant INIT_WETH = 50e18;
 
-    // constants: INIT AMOUNT of weth, ERC20
-    int256 constant INIT_X = 100e18; // poolToken
-    int256 constant INIT_Y = 50e18; // weth
-
-    // initLP address
-    address initLP = makeAddr("initLP");
-
-    // handler
-    Handler handler;
+    Handler h;
 
     // setUp:
     function setUp() public {
         // init memebers
-        poolToken = new ERC20Mock();
+        pt = new ERC20Mock();
         weth = new ERC20Mock();
-        poolFactory = new PoolFactory(address(weth));
-        pool = new TSwapPool(
-            address(poolToken),
-            address(weth),
-            "LPToken",
-            "LP"
-        );
-
-        vm.startPrank(initLP);
-        // mint erc20, weth, pooltoken
-        poolToken.mint(initLP, uint256(INIT_X));
-        weth.mint(initLP, uint256(INIT_Y));
-
+        pool = new TSwapPool(address(pt), address(weth), "LP", "LP");
+        // mint weth, pooltoken
+        address user = makeAddr("user");
+        vm.startPrank(user);
+        pt.mint(user, INIT_PT);
+        weth.mint(user, INIT_WETH);
         // approve poolToken, weth to pool, max
-        poolToken.approve(address(pool), UINT256_MAX);
+        pt.approve(address(pool), UINT256_MAX);
         weth.approve(address(pool), UINT256_MAX);
 
         // Pool Deposit
-        // q: why minimumLiquidityTokensToMint is INIT_Y
-        pool.deposit(
-            uint256(INIT_Y),
-            1,
-            uint256(INIT_X),
-            uint64(block.timestamp)
-        );
+        pool.deposit(INIT_WETH, 1, INIT_PT, uint64(block.timestamp));
+
         vm.stopPrank();
+
         // set handler
-        handler = new Handler(pool);
+        h = new Handler(pool);
+        bytes4[] memory s = new bytes4[](2);
+        s[0] = h.deposit.selector;
+        s[1] = h.swap.selector;
+        targetContract(address(h));
+        targetSelector(FuzzSelector({addr: address(h), selectors: s}));
         // set selectors
-        bytes4[] memory selectors = new bytes4[](1);
-        selectors[0] = handler.depositByWETH.selector;
         // set targets
-        targetContract(address(handler));
-        targetSelector(
-            FuzzSelector({addr: address(handler), selectors: selectors})
-        );
     }
 
-    // invariant_xy=k
-    // change in pool size of WETH follow function
-    // assert delta X == expected X, by handler
-    function invariant_xyk() public {
-        assertEq(handler.expectedDeltaX(), handler.actualDeltaX());
-        assertEq(handler.expectedDeltaY(), handler.actualDeltaY());
+    function test_pool_initialized() public view {
+        int256 x;
+        int256 y;
+        (x, y) = h.getPoolReserves();
+        assertEq(INIT_PT, uint256(x));
+        assertEq(INIT_WETH, uint256(y));
+    }
+
+    
+    // invariant testing
+    // delta must be keeped in deposits, swaps
+    function invariant_delta() public view {
+        assertEq(h.expectedDeltaX(), h.actualDeltaX());
+        assertEq(h.expectedDeltaY(), h.actualDeltaY());
     }
 }
