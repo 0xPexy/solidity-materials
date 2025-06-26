@@ -628,7 +628,6 @@ function changeFeeAddress(address newFeeAddress) external onlyOwner {
 + function withdrawFees() external onlyOwner
 ```
 
----
 ## Informational
 ### [I-1] Outdated Solidity and floating pragma
 
@@ -648,19 +647,22 @@ function changeFeeAddress(address newFeeAddress) external onlyOwner {
 
 **Recommended Mitigation:**
 1. Add constant member variables in `PuppyRaffle`.
-    ```diff
-    + // Constants for calculating winner reward and fee
-    + uint256 private constant TOTAL_RATIO = 100;
-    + uint256 private constant PRIZE_RATIO = 80;
-    + uint256 private constant FEE_RATIO = 20;
-    ```
-1. Use them in `selectWinner`.
-    ```diff
-    - uint256 prizePool = (totalAmountCollected * 80) / 100;
-    - uint256 fee = (totalAmountCollected * 20) / 100;
-    + uint256 prizePool = (totalAmountCollected * PRIZE_RATIO) / TOTAL_RATIO;
-    + uint256 fee = (totalAmountCollected * FEE_RATIO) / TOTAL_RATIO;
-    ```
+   
+```diff
++ // Constants for calculating winner reward and fee
++ uint256 private constant TOTAL_RATIO = 100;
++ uint256 private constant PRIZE_RATIO = 80;
++ uint256 private constant FEE_RATIO = 20;
+```
+
+2. Use them in `selectWinner`.
+   
+```diff
+- uint256 prizePool = (totalAmountCollected * 80) / 100;
+- uint256 fee = (totalAmountCollected * 20) / 100;
++ uint256 prizePool = (totalAmountCollected * PRIZE_RATIO) / TOTAL_RATIO;
++ uint256 fee = (totalAmountCollected * FEE_RATIO) / TOTAL_RATIO;
+```
 
 ### [I-3] Missing keywords for unchanged variables
 
