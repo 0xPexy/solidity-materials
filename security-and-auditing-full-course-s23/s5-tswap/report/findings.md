@@ -1,10 +1,10 @@
 ## High Severity
 
-### [H-1] Extra incentives break the core invariant
+### [H-1] Bonus Payouts in `_swap` Break Core Invariant, Leading to Pool Drain
 
 **Description:** In the `TSwapPool::_swap` function, there is an extra incentive per 10 swaps, transfers 1e18 bonus output tokens to the address. 
 
-**Impact:** This breaks the *core invariant* that `x*y=k` because it takes 1e18 additional output from the pool, which lowers either x or y in the invariant.
+**Impact:** This breaks the *core invariant* that x*y=k because it removes 1e18 of the outputToken from the pool without a corresponding input. This systematically drains value from the pool with each bonus payout, causing a direct loss of funds for liquidity providers.
 
 **Proof of Concept:** The code shows that the pool consist of 1:1 PoolToken-WETH with 10000(e18) amount each. The swapper swaps 10 times then the invariant is broken.
 
@@ -123,11 +123,11 @@ contract InvariantTest is Test {
 -   }
 ```
 
-### [H-2] Incorrect input token amount calculation in swap takes much more inputs 
+### [H-2] Incorrect Fee Calculation in `getInputAmountBasedOnOutput` Overcharges Users
 
 **Description:** `TSwapPool::getInputAmountBasedOnOutput` calculates `inputAmount` by multiplying `10_000` to `(inputReserves * outputAmount)`. 
 
-**Impact:** Because the `TSwapPool::swapExactOutput` uses the method, costs users to pay ten times more inputs than the normal case to get the same amount of outputs.
+**Impact:** Because the `TSwapPool::swapExactOutput` uses the method, causes users to pay ten times more inputs than the normal case to get the same amount of outputs.
 
 **Proof of Concept:** The code shows that the pool consist of 1:1 PoolToken-WETH with 100(e18) amount each. The user wants 10 output WETH, expecting about 11.11 PoolTokens are inserted to the pool. But about 111 PoolTokens are inserted, taken from the user.
 
@@ -172,7 +172,7 @@ contract InvariantTest is Test {
 + return ((inputReserves * outputAmount) * 1_000) / ((outputReserves - outputAmount) * 997);
 ```
 
-### [H-3] Incorrect swap method usage may cause unexpected swap result
+### [H-3] `sellPoolTokens` Uses Incorrect Swap Logic, Causing Users to Sell Wrong Amount
 
 **Description:** `TSwapPool::sellPoolTokens` is intended to facilitate users selling pool tokens in exchange of WETH, calls `swapExactOutput` with `poolTokenAmount` parameter. This function fixes the expected WETH amount to `poolTokenAmount` and calculate the amount of pool tokens to sell internally.
 
@@ -229,7 +229,7 @@ contract InvariantTest is Test {
     }
 ```
 
-Modifying the followings into the `testIncorrectSellPoolTokens` passes the test.
+Apply the followings into the `testIncorrectSellPoolTokens` to pass the test.
 
 ```diff
         uint256 userPTBalance = poolToken.balanceOf(user);
@@ -243,11 +243,11 @@ Modifying the followings into the `testIncorrectSellPoolTokens` passes the test.
 +       assertLe(expectedMinOutput, acutalOutput);
 ```
 
-### [H-4] Missing check for maximum input token amount might cause excessive slippage
+### [H-4] `swapExactOutput` Misses Bounding Input Amount, Causing Excessive Slippages
 
 **Description:** The `TSwapPool::swapExactOutput` misses amount limitation for the input token compared to `swapExactInput` checks the minimum output token amount to receive. 
 
-**Impact:** Users might over pay the input token for buying the output token than they willing to pay.
+**Impact:** Users might overpay the input token for buying the output token than they willing to pay.
 
 **Proof of Concept:** The code shows that the pool consist of 100e18 PoolTokens and 10e18 WETH. The user want to get 1 WETH and expected to transfer about 11.4 PT to pool. But the attacker formally takes 5 WETH from the pool, user spends about 276.6 PT to buy one WETH.
 
@@ -351,12 +351,11 @@ Modifying the followings into the `testIncorrectSellPoolTokens` passes the test.
 
 ## Medium Severity
 
-### [M-1] Missing a deadline check in `deposit` allows transactions after deadline
+### [M-1] Missing Deadline Check in `deposit` Allows Transactions After Deadline
 
 **Description:** `TSwapPool::deposit` has `deadline` parameter, intended to reject transactions after the deadline. However, `deadline` is unused anywhere, results to missing a deadline check.
 
-**Impact:** 
-Transactions 
+**Impact:** Users willing to deposit in specific period considering the market conditions may submit the transaction with the deadline. But this will not be blocked and exectued in a worse price than they intended.
 
 **Proof of Concept:** Run `make build` to see a compilation warning.
 
@@ -376,9 +375,163 @@ function deposit(...) external
 +   revertIfDeadlinePassed(deadline)
 ```
 
+### [M-2] Protocol Fails to Account for Rebase, Fee-on-Transfer and ERC-777 Tokens, Breaking the Core Invariant
+
+**Description:** The *Weird-ERC20* tokens like rebase, fee-on-transfer and ERC-777 have abnormal transfers. If a pool includes these tokens, the sum of the user and the pool balance can be changed during a swap.
+
+**Impact:** These tokens might break the core invariant x*y=k in the pool, because the x or y can be changed.
+
+**Proof of Concept:** The code shows that the pool consist of 1:1 PoolToken-WETH with 10000(e18) amount each. PoolToken is a fee-on-transfer token which sends 10% of transferring amount to the owner. The swapper swaps 1 PoolToken to WETH, doing 10 times then the invariant is broken.
+
+*Code*
+
+1. Add the followings into `test/unit/WeirdERC20PoolTest.t.sol`.
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.20;
+
+import {Test} from "forge-std/Test.sol";
+import {ERC20Mock} from "../mocks/ERC20Mock.sol";
+import {WeirdERC20} from "../mocks/WeirdERC20.sol";
+
+import {TSwapPool} from "../../src/TSwapPool.sol";
+
+contract WeirdERC20PoolTest is Test {
+    WeirdERC20 pt;
+    ERC20Mock weth;
+    TSwapPool pool;
+
+    uint256 constant INIT_PT = 10000e18;
+    uint256 constant INIT_WETH = 10000e18;
+    address lp = makeAddr("lp");
+    address swapper = makeAddr("swapper");
+    address weirdERC20Owner = makeAddr("weirdERC20Owner");
+    uint256 constant INIT_BAL = type(uint128).max;
+
+    int256 public expectedDeltaPT;
+    int256 public actualDeltaPT;
+
+    modifier useSwapper() {
+        vm.startPrank(swapper);
+        _;
+        vm.stopPrank();
+    }
+
+    function setUp() public {
+        vm.prank(weirdERC20Owner);
+        pt = new WeirdERC20();
+
+        weth = new ERC20Mock();
+        pool = new TSwapPool(address(pt), address(weth), "LP", "LP");
+
+        pt.mint(lp, INIT_PT);
+        weth.mint(lp, INIT_WETH);
+        pt.mint(swapper, INIT_PT);
+        weth.mint(swapper, INIT_WETH);
+
+        vm.startPrank(lp);
+        pt.approve(address(pool), UINT256_MAX);
+        weth.approve(address(pool), UINT256_MAX);
+
+        pool.deposit(INIT_WETH, INIT_WETH, INIT_PT, uint64(block.timestamp));
+
+        vm.stopPrank();
+    }
+
+    // hook for testing
+    function getPoolReserves() public view returns (int256, int256) {
+        return (
+            int256(pt.balanceOf(address(pool))),
+            int256(weth.balanceOf(address(pool)))
+        );
+    }
+
+    function testWeirdERC20() public {
+        uint loops = 10;
+        for (uint i = 0; i < loops; ++i) {
+            swapByPT();
+            assertEq(expectedDeltaPT, actualDeltaPT);
+        }
+    }
+
+    // swap PT->WETH by WETH amount
+    function swapByPT() public useSwapper {
+        // 1. bound input
+        uint256 amountPT = 1e18;
+        int256 beforePT;
+        int256 beforeWETH;
+        int256 afterPT;
+        int256 afterWETH;
+
+        (beforePT, beforeWETH) = getPoolReserves();
+        uint256 amountWETH = pool.getOutputAmountBasedOnInput(
+            amountPT,
+            uint256(beforePT),
+            uint256(beforeWETH)
+        );
+
+        // 2. set invariants
+        expectedDeltaPT = int256(amountPT);
+
+        // 3. run pre-cond. tx
+        pt.approve(address(pool), amountPT);
+
+        // 4. run tx
+        pool.swapExactInput(
+            pt,
+            amountPT,
+            weth,
+            amountWETH,
+            uint64(block.timestamp)
+        );
+
+        // 5. update ghost vars
+        (afterPT, afterWETH) = getPoolReserves();
+        actualDeltaPT = afterPT - beforePT;
+    }
+}
+```
+
+2. Running `forge test --mt WeirdERC20PoolTest -vv`, the assertion fails with the difference 1e17, meaning 10% of 1e18 PoolToken amount has gone.
+
+```bash
+[FAIL: assertion failed: 1000000000000000000 != 900000000000000000] testWeirdERC20() (gas: 617562)
+```
+
+3. If you run the test with `-vvvv`, you can see that 1e17 amount has been transferred to the owner.
+
+```bash
+emit Transfer(from: swapper: [0x4A9D6b0b19CBFfCB0255550661eCB7014283c60E], to: weirdERC20Owner: [0xE8C723E79F10df14c40c3c342395DA8Bbe257f18], value: 100000000000000000 [1e17])
+```
+
+**Recommended Mitigation:** Add the core invariant checks in swap and deposit to track the K always grows.
+
+```diff
++   // tracks core invariant x*y=k
++   uint256 K;
+
++   // add in swap, deposit
++      (uint256 ptBalance, uint256 wethBalance) = _getReserves();
++      uint256 newK = ptBalance * wethBalance;
++      // K must grows
++      require(newK >= K);
++      K = newK;
+    
++   // optional hooks 
++  function _getReserves() internal view returns (uint256, uint256) {
++      return (
++          i_poolToken.balanceOf(address(this)),
++          i_wethToken.balanceOf(address(this))
++      );
++  }
+
+```
+
+
 ## Low Severity
 
-### [L-1] Incorrect parameter order in event might cause potential bugs in subscribers
+### [L-1] Incorrect Parameter Order in Event Might Cause Potential Bugs in Subscribers
 
 **Description:** There is an incorrect parameter ordering in `TSwapPool::_addLiquidityMintAndTransfer`, which might cause potential bugs in off-chain Apps subscribing the event.
 
@@ -407,33 +560,36 @@ contract TSwapPool is ERC20 {
 + emit LiquidityAdded(msg.sender, wethToDeposit, poolTokensToDeposit);
 ```
 
-### [L-2] Missing return value in function might cause potential bugs in other contracts
+### [L-2] Missing Return Value in `swapExactInput` Might Cause Potential Bugs in Other Contracts
 
 **Description:** `TSwapPool::swapExactInput` has return value `uint256 output`, but never return any value. This might cause potential bugs in the other contracts interacting with the function.
 
 **Recommended Mitigation:** Return the exact value.
 
 ```diff
-function swapExactInput(...)
--   returns (uint256 output)
-+   returns(uint256) {
+function swapExactInput(...) returns (uint256 output) {
     ...
-    _swap(inputToken, inputAmount, outputToken, outputAmount);
-+   return outputAmount;
+-   uint256 outputAmount = getOutputAmountBasedOnInput(...);
++   output = getOutputAmountBasedOnInput(...);
+    if (output < minOutputAmount) {
+        revert ...
+    }
+-   _swap(inputToken, inputAmount, outputToken, outputAmount);
++   _swap(inputToken, inputAmount, outputToken, output);
 }
 ```
 
 
 ## Informational
 
-### [I-1] Unused statements
+### [I-1] Unused Statements
 
 Remove unused statements.
 
 - `error PoolFactory__PoolDoesNotExist(address tokenAddress);` in `PoolFactory`
 - `uint256 poolTokenReserves = i_poolToken.balanceOf(address(this));` in `TSwapPool::deposit`
 
-### [I-2] Lacking zero-address checks
+### [I-2] Lacking Zero-address Checks
 
 Add zero-address checks in below parts.
 
@@ -461,7 +617,7 @@ constructor(
 }
 ```
 
-### [I-3] Duplicated function call
+### [I-3] `createPool` Should Use .symbol() for LP Token Symbol
 
 In `PoolFactory::createPool`, consider using `IERC20::symbol` to represent LP token symbol. The `IERC20::name` is already used.
 
@@ -471,11 +627,11 @@ string memory liquidityTokenName = string.concat("T-Swap ", IERC20(tokenAddress)
 + string memory liquidityTokenSymbol = string.concat("ts", IERC20(tokenAddress).symbol());
 ```
 
-### [I-4] Unnecessary visibility
+### [I-4] Unnecessary Visibility
 
 The `public` function `TSwapPool::swapExactInput` is not internally referenced, use `external`.
 
-### [I-5] Unnamed numeric constants
+### [I-5] Unnamed Numeric Constants
 
 Use named numeric constants for arithmetic operations.
 
