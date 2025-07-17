@@ -3,170 +3,139 @@ pragma solidity ^0.8.20;
 
 import {Test, console2} from "forge-std/Test.sol";
 
-contract StorageTest is Test {
-    MyStorage st;
-
-    function setUp() public {
-        st = new MyStorage();
+contract ABITest is Test {
+    struct Foo {
+        uint256 x;
+        uint256[] a;
     }
 
-    function test_run() public {
-        st.run();
-    }
-}
+    function setUp() public {}
 
-contract MyStorage {
-    // SLOT 0
-    mapping(address => uint256) private balances;
-    // Immutable variables don't use storage slots; they are baked into the bytecode.
-    address immutable alice;
-    address immutable bob;
-
-    // SLOT 1
-    mapping(address => mapping(address => uint256)) private nestedBalances;
-    // Constants don't use storage slots; they are replaced by the compiler.
-    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-
-    // SLOT 2, 3, 4: Statically-sized arrays store elements sequentially.
-    uint256[3] private fArr = [11, 12, 13];
-
-    // SLOT 5, 6: Elements are packed if they fit. `uint128` takes half a slot.
-    // fArr2[0] and fArr2[1] are packed into slot 5.
-    // fArr2[2] is in slot 6.
-    uint128[3] private fArr2 = [21, 22, 23];
-
-    // SLOT 7: For dynamic arrays, the slot stores the array length.
-    // The data is at keccak256(slot).
-    uint256[] private dArr = [31, 32, 33];
-
-    // SLOT 8: Another dynamic array.
-    uint128[] private dArr2 = [41, 42, 43];
-
-    // SLOT 9: For short strings (<= 31 bytes), data is stored in the slot.
-    // The last byte is `length * 2`.
-    string private short = "short";
-
-    // SLOT 10: For long strings (> 31 bytes), slot stores `length * 2 + 1`.
-    // The data is at keccak256(slot).
-    string private long =
-        "aabbccddeeffgghhiijjkkllmmnnooppqqrrssttuuvvwwxxyyzz"; // 52 bytes
-
-    // SLOT 11: For short bytes (<= 31 bytes), similar to short strings.
-    bytes private fBytes = hex"ffeedd";
-
-    // SLOT 12: Dynamic array of bytes1.
-    bytes1[] private bBytes;
-
-    constructor() {
-        alice = address(0x1234);
-        balances[alice] = 100e18;
-        bob = address(0x2345);
-        nestedBalances[alice][WETH] = 1000e18;
-
-        bBytes.push(hex"ff");
-        bBytes.push(hex"ee");
-        bBytes.push(hex"dd");
-    }
-
-    function run() public {
-        console2.log("--- Testing Simple Mapping (Slot 0) ---");
-        bytes32 balanceBaseSlot;
-        assembly {
-            balanceBaseSlot := balances.slot
+    function transfer(uint256[] memory amount, address to) external {
+        for (uint256 i = 0; i < amount.length; i++) {
+            console2.log(amount[i], to);
         }
-        assert(balanceBaseSlot == 0);
+    }
 
-        uint256 aliceBalanceSlot = getMappingSlot(balanceBaseSlot, alice);
-        assert(getVal(aliceBalanceSlot) == 100e18);
-
-        uint256 bobBalanceSlot = getMappingSlot(balanceBaseSlot, bob);
-        setVal(bobBalanceSlot, 200e18);
-        assert(getVal(bobBalanceSlot) == 200e18);
-
-        console2.log("\n--- Testing Nested Mapping (Slot 1) ---");
-        bytes32 nestedBalancesBaseSlot;
-        assembly {
-            nestedBalancesBaseSlot := nestedBalances.slot
+    function play(string[] memory str) external {
+        for (uint256 i = 0; i < str.length; i++) {
+            console2.log(str[i]);
         }
-        bytes32 aliceLevel1Slot = keccak256(
-            abi.encode(alice, nestedBalancesBaseSlot)
-        );
-        bytes32 aliceWethLevel2Slot = keccak256(
-            abi.encode(WETH, aliceLevel1Slot)
+    }
+
+    function foo(Foo[] calldata f) external pure {
+        for (uint256 i = 0; i < f.length; i++) {
+            console2.log(f[i].x);
+        }
+    }
+
+    /// @dev Compares manual ABI encoding with `abi.encodeWithSelector` for a function
+    /// that takes a dynamic array (`uint256[]`) and an address.
+    function test_abi_encoding_comparison_transfer() public {
+        // --- Test Data ---
+        uint256[3] memory amount = [uint256(1), uint256(2), uint256(3)];
+        address addr = makeAddr("addr");
+
+        // `transfer` expects `uint256[]`, so we must convert the fixed-size array to a dynamic one.
+        uint256[] memory dynamicAmount = new uint256[](amount.length);
+        for (uint256 i = 0; i < amount.length; i++) {
+            dynamicAmount[i] = amount[i];
+        }
+
+        // --- Encoding ---
+        // 1. Standard encoding using `encodeWithSelector`
+        bytes memory dataWithSelector = abi.encodeWithSelector(
+            ABITest.transfer.selector,
+            dynamicAmount,
+            addr
         );
 
-        uint256 aliceWethBalance;
-        assembly {
-            aliceWethBalance := sload(aliceWethLevel2Slot)
-        }
-        assert(nestedBalances[alice][WETH] == aliceWethBalance);
-        console2.log("Nested balance for Alice:", aliceWethBalance);
-
-        console2.log("\n--- Testing Fixed-Size Arrays (Slots 2-6) ---");
-        for (uint8 i = 0; i < 3; i++) {
-            assert(getVal(2 + i) == fArr[i]);
-        }
-
-        // Check packed array fArr2
-        bytes32 packedSlot5 = getValAsBytes32(5);
-        assert(uint128(uint256(packedSlot5)) == fArr2[0]);
-        assert(uint128(uint256(packedSlot5) >> 128) == fArr2[1]);
-        assert(uint128(getVal(6)) == fArr2[2]);
-
-        console2.log("\n--- Testing Dynamic Arrays (Slots 7-8) ---");
-        assert(getVal(7) == dArr.length); // Slot 7 stores length of dArr
-        uint256 dArrBase = uint256(keccak256(abi.encode(7)));
-        assert(getVal(dArrBase) == dArr[0]);
-        assert(getVal(dArrBase + 1) == dArr[1]);
-
-        assert(getVal(8) == dArr2.length); // Slot 8 stores length of dArr2
-
-        console2.log("\n--- Testing Strings (Slots 9-10) ---");
-        bytes32 shortStrSlot = getValAsBytes32(9);
-        // "short" is 5 bytes. Last byte of slot is 5 * 2 = 10 (0x0a).
-        // For a short string, the last byte of the slot stores `length * 2`.
-        // "short" has 5 characters, so the last byte should be 10.
-        assert(uint8(bytes1(shortStrSlot << 248)) == 5 * 2);
-        console2.logBytes32(shortStrSlot);
-
-        // long is 52 bytes. Slot 10 stores 52 * 2 + 1 = 105.
-        // "long" is 52 bytes. Slot 10 stores 52 * 2 + 1 = 105.
-        assert(getVal(10) == 52 * 2 + 1);
-        uint256 longStrBase = uint256(keccak256(abi.encode(10)));
-        bytes32 longStrPart1 = getValAsBytes32(longStrBase);
-        bytes32 longStrPart2 = getValAsBytes32(longStrBase + 1);
-        console2.log(
-            "Long string part 1:",
-            string(abi.encodePacked(longStrPart1))
+        // 2. Manual encoding (equivalent to `encodeWithSelector`)
+        bytes memory manualData = abi.encodePacked(
+            ABITest.transfer.selector,
+            abi.encode(dynamicAmount, addr)
         );
-        console2.log(
-            "Long string part 2:",
-            string(abi.encodePacked(longStrPart2))
-        );
+
+        // --- Verification ---
+        console2.log("--- Calldata for transfer(uint256[],address) ---");
+        console2.logBytes(dataWithSelector);
+        assertEq(dataWithSelector, manualData, "Manual encoding should match `encodeWithSelector`");
+
+        (bool success, ) = address(this).call(dataWithSelector);
+        assertTrue(success, "Call to transfer should succeed");
     }
 
-    function getMappingSlot(
-        bytes32 baseSlot,
-        address key
-    ) internal pure returns (uint256 slot) {
-        slot = uint256(keccak256(abi.encode(key, baseSlot)));
+    /// @dev Compares manual ABI encoding with `abi.encodeWithSelector` for a function
+    /// that takes a dynamic array of strings (`string[]`).
+    function test_abi_encoding_comparison_play() public {
+        // --- Test Data ---
+        string[] memory str = new string[](2);
+        str[0] = "alice";
+        str[1] = "bob";
+
+        // --- Encoding ---
+        // 1. Standard encoding
+        bytes memory dataWithSelector = abi.encodeWithSelector(ABITest.play.selector, str);
+
+        // 2. Manual encoding
+        bytes memory manualData = abi.encodePacked(ABITest.play.selector, abi.encode(str));
+
+        // --- Verification ---
+        console2.log("--- Calldata for play(string[]) ---");
+        console2.logBytes(dataWithSelector);
+        assertEq(dataWithSelector, manualData, "Manual encoding should match `encodeWithSelector`");
+
+        (bool success, ) = address(this).call(dataWithSelector);
+        assertTrue(success, "Call to play should succeed");
     }
 
-    function getVal(uint256 slot) internal view returns (uint256 val) {
-        assembly {
-            val := sload(slot)
+    /// @dev Compares manual ABI encoding with `abi.encodeWithSelector` for a function
+    /// that takes a dynamic array of structs (`Foo[]`).
+    function test_abi_encoding_comparison_foo() public {
+        // --- Test Data ---
+        Foo[] memory fooArr = new Foo[](2);
+        uint256[] memory one = new uint256[](3);
+        one[0] = 0x11;
+        one[1] = 0x12;
+        one[2] = 0x13;
+        fooArr[0] = Foo(0x41, one);
+
+        uint256[] memory two = new uint256[](2);
+        two[0] = 0x21;
+        two[1] = 0x22;
+        fooArr[1] = Foo(0x42, two);
+
+        // --- Encoding ---
+        // 1. Standard encoding
+        bytes memory dataWithSelector = abi.encodeWithSelector(ABITest.foo.selector, fooArr);
+
+        // 2. Manual encoding
+        bytes memory manualData = abi.encodePacked(ABITest.foo.selector, abi.encode(fooArr));
+
+        // --- Verification ---
+        console2.log("--- Calldata for foo(Foo[]) ---");
+        console2.logBytes(dataWithSelector);
+        assertEq(dataWithSelector, manualData, "Manual encoding should match `encodeWithSelector`");
+
+        (bool success, ) = address(this).call(dataWithSelector);
+        assertTrue(success, "Call to foo should succeed");
+    }
+
+    // `internal` and `private` functions can accept fixed-size arrays as parameters
+    // because they are not part of the contract's public ABI.
+    function transferInternal(uint256[3] memory amount, address to) internal {
+        for (uint256 i = 0; i < amount.length; i++) {
+            console2.log("Internal call:", amount[i], to);
         }
     }
 
-    function getValAsBytes32(uint256 slot) internal view returns (bytes32 val) {
-        assembly {
-            val := sload(slot)
-        }
-    }
+    /// @dev Demonstrates that fixed-size arrays can be passed to internal functions.
+    function test_fixed_array_internal_call() public {
+        uint256[3] memory amount = [uint256(10), uint256(20), uint256(30)];
+        address addr = makeAddr("internal_addr");
 
-    function setVal(uint256 slot, uint256 value) internal {
-        assembly {
-            sstore(slot, value)
-        }
+        // A direct call to an internal function with a fixed-size array is allowed.
+        // The ABI is not involved in internal function calls, so no encoding mismatch occurs.
+        transferInternal(amount, addr);
     }
 }
