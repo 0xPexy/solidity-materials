@@ -8,23 +8,35 @@ contract ProxyTest2 is Test {
 
     function setUp() public {}
 
-    function test_transparent() public {
+    function test_transparentProxy() public {
         vm.startPrank(owner);
         ImplV1 v1 = new ImplV1();
-        ImplV2 v2 = new ImplV2();
-        Transparent tp = new Transparent(owner, address(v1));
-        (bool success, bytes memory v) = address(tp).call(
+        ImplV2 v2 = new ImplV2(); // The new implementation
+        TransparentProxy proxy = new TransparentProxy(owner, address(v1));
+
+        // 1. Check initial version is V1
+        (bool success, bytes memory versionResult) = address(proxy).call(
             abi.encodeWithSignature("version()")
         );
-        assertTrue(success);
-        assertEq(v, abi.encode("V1"));
+        assertTrue(success, "Initial call to V1 failed");
+        assertEq(versionResult, abi.encode("V1"));
 
-        AdminProxy ap = AdminProxy(tp.ADMIN_PROXY());
-        ap.upgradeToAndCall(ITransparent(address(tp)), address(v2), "");
-        (success, v) = address(tp).call(abi.encodeWithSignature("version()"));
-        // successfully migrated to V2
-        assertTrue(success);
-        assertEq(v, abi.encode("V2"));
+        // 2. Upgrade to V2
+        AdminProxy admin = AdminProxy(proxy.ADMIN_PROXY());
+        admin.upgradeToAndCall(ITransparent(address(proxy)), address(v2), "");
+
+        // 3. Check version is now V2
+        (success, versionResult) = address(proxy).call(
+            abi.encodeWithSignature("version()")
+        );
+        assertTrue(success, "Call to V2 failed");
+        assertEq(versionResult, abi.encode("V2"));
+
+        // 4. Fails to call non-existing func
+        (success, ) = address(proxy).call(
+            abi.encodeWithSignature("version1()")
+        );
+        assertFalse(success);
         vm.stopPrank();
     }
 }
@@ -42,11 +54,11 @@ contract AdminProxy {
     }
 
     function upgradeToAndCall(
-        ITransparent _tp,
+        ITransparent _proxy,
         address _newImpl,
         bytes calldata _data
     ) public onlyOwner {
-        _tp.upgradeToAndCall(_newImpl, _data);
+        _proxy.upgradeToAndCall(_newImpl, _data);
     }
 }
 
@@ -54,7 +66,7 @@ interface ITransparent {
     function upgradeToAndCall(address impl, bytes calldata data) external;
 }
 
-contract EIP1967 {
+contract EIP1967Proxy {
     bytes32 private constant _IMPL_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
@@ -77,7 +89,7 @@ contract EIP1967 {
 
     // delegate call should be part of the base abstract contract 'proxy'
     // in this ex, treat EIP1967 doing that
-    function _fallback(
+    function _delegate(
         bytes memory data
     ) internal virtual returns (bytes memory result) {
         (bool success, bytes memory _result) = _getImpl().delegatecall(data);
@@ -85,7 +97,7 @@ contract EIP1967 {
         result = _result;
     }
 
-    // This might not be part of original EIP 1967, but for easy impl
+    // This upgrade function is a simplified helper for the pattern
     function _upgradeToAndCall(
         address _newImpl,
         bytes memory data
@@ -94,33 +106,33 @@ contract EIP1967 {
             sstore(_IMPL_SLOT, _newImpl)
         }
         if (data.length > 0) {
-            _fallback(data);
+            _delegate(data);
         }
-        console2.log("upgraded to:", _newImpl);
     }
 }
 
-contract Transparent is EIP1967 {
+contract TransparentProxy is EIP1967Proxy {
     address public immutable ADMIN_PROXY;
 
-    constructor(address _owner, address _impl) EIP1967(_impl) {
+    constructor(address _owner, address _impl) EIP1967Proxy(_impl) {
         ADMIN_PROXY = address(new AdminProxy(_owner));
     }
 
-    fallback(bytes calldata _data) external returns (bytes memory result) {
-        console2.log("Fallback called, caller:", msg.sender);
+    fallback(bytes calldata _calldata) external returns (bytes memory result) {
         if (msg.sender == ADMIN_PROXY) {
             if (msg.sig == ITransparent.upgradeToAndCall.selector) {
-                (address newImpl, bytes memory data) = abi.decode(
-                    _data[4:],
+                // Admin is calling the upgrade function.
+                (address newImpl, bytes memory initData) = abi.decode(
+                    _calldata[4:],
                     (address, bytes)
                 );
-                _upgradeToAndCall(newImpl, data);
+                _upgradeToAndCall(newImpl, initData);
             } else {
                 revert("admin should call upgradeToAndCall");
             }
         } else {
-            result = _fallback(_data);
+            // All other calls are delegated to the implementation.
+            result = _delegate(_calldata);
         }
     }
 }
