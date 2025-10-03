@@ -25,4 +25,8 @@ contract GovToken is ERC20, ERC20Permit, ERC20Votes {
     function CLOCK_MODE() public pure override returns (string memory) {
         return "mode=timestamp";
     }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
 }

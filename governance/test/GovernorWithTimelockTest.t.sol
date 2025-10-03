@@ -14,7 +14,12 @@ contract GovernorWithTimelockTest is Test {
     GovernorWithTimelock private governor;
     GovToken private govToken;
     Counter private counter;
+
+    uint256 VOTING_DELAY;
+    uint256 VOTING_PERIOD;
+    uint256 constant MIN_DELAY = 2 days;
     address proposer;
+    address voter;
 
     function setUp() public {
         govToken = new GovToken();
@@ -25,10 +30,12 @@ contract GovernorWithTimelockTest is Test {
         executors[0] = address(0); // anyone can run
 
         // constructor: minDelay, proposers, executors, admin(address(this) as temp admin)
-        timelock = new TimelockController(2 days, proposers, executors, address(this));
+        timelock = new TimelockController(MIN_DELAY, proposers, executors, address(this));
 
         // 2. setup Governor
         governor = new GovernorWithTimelock(govToken, timelock);
+        VOTING_DELAY = governor.votingDelay();
+        VOTING_PERIOD = governor.votingPeriod();
 
         // 3. grant role to Governor
         timelock.grantRole(timelock.PROPOSER_ROLE(), address(governor));
@@ -40,6 +47,21 @@ contract GovernorWithTimelockTest is Test {
 
         // 5. setup Counter -> owner should be Timelock, not Governor
         counter = new Counter(address(timelock));
+
+        // 6. proposer GovToken Setting: mint -> delegate
+        // Don't use deal (deal changes storage without totalSupply)
+        proposer = makeAddr("proposer");
+        govToken.mint(proposer, 1000e18);
+        vm.prank(proposer);
+        govToken.delegate(proposer);
+
+        voter = makeAddr("voter");
+        govToken.mint(voter, 1000e18);
+        vm.prank(voter);
+        govToken.delegate(voter);
+
+        // 7. skip 1 hour to activate votes (bc we're using timestamp in GovToken)
+        skip(3600);
     }
 
     function test_initialized() public {
@@ -48,6 +70,7 @@ contract GovernorWithTimelockTest is Test {
         assertTrue(timelock.hasRole(timelock.CANCELLER_ROLE(), address(governor)));
         assertEq(counter.owner(), address(timelock));
 
+        // Governor should not be able to execute
         vm.prank(address(governor));
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(governor)));
         counter.increment();
@@ -65,22 +88,49 @@ contract GovernorWithTimelockTest is Test {
 
         bytes32 descriptionHash = keccak256(abi.encodePacked(description));
 
+        // 1. propose
         uint256 proposalId = governor.hashProposal(targets, values, calldatas, descriptionHash);
 
-        // uint256 voteStart = block.timestamp + VOTING_DELAY;
-        // uint256 voteEnd = voteStart + VOTING_PERIOD;
+        uint256 voteStart = block.timestamp + VOTING_DELAY;
+        uint256 voteEnd = voteStart + VOTING_PERIOD;
 
-        // vm.expectEmit(true, true, true, true);
-        // emit IGovernor.ProposalCreated(
-        //     proposalId, proposer, targets, values, new string[](1), calldatas, voteStart, voteEnd, description
-        // );
+        vm.prank(proposer);
+        governor.propose(targets, values, calldatas, description);
 
-        // vm.prank(proposer);
-        // governor.propose(targets, values, calldatas, description);
+        assertEq(uint256(governor.state(proposalId)), uint256(IGovernor.ProposalState.Pending));
+        assertEq(governor.proposalProposer(proposalId), proposer);
+        assertEq(governor.proposalSnapshot(proposalId), voteStart);
+        assertEq(governor.proposalDeadline(proposalId), voteEnd);
 
-        // assertEq(uint256(governor.state(proposalId)), uint256(IGovernor.ProposalState.Pending));
-        // assertEq(governor.proposalProposer(proposalId), proposer);
-        // assertEq(governor.proposalSnapshot(proposalId), voteStart);
-        // assertEq(governor.proposalDeadline(proposalId), voteEnd);
+        // 2. castVote
+        vm.startPrank(voter);
+
+        // revert bc not in voting period
+        vm.expectRevert();
+        governor.castVote(proposalId, 1);
+
+        // skip voting delay, make sure to add 1(should exceed)
+        skip(VOTING_DELAY + 1);
+        assertEq(uint256(governor.state(proposalId)), uint256(IGovernor.ProposalState.Active));
+        governor.castVote(proposalId, 1);
+
+        vm.stopPrank();
+
+        skip(VOTING_PERIOD + 1 days);
+
+        // 3. queue operation
+        assertEq(uint256(governor.state(proposalId)), uint256(IGovernor.ProposalState.Succeeded));
+        governor.queue(targets, values, calldatas, descriptionHash);
+        assertEq(uint256(governor.state(proposalId)), uint256(IGovernor.ProposalState.Queued));
+
+        // 4. execute
+        // revert before minDelay
+        vm.expectRevert();
+        governor.execute(targets, values, calldatas, descriptionHash);
+
+        skip(MIN_DELAY + 1);
+        governor.execute(targets, values, calldatas, descriptionHash);
+        assertEq(uint256(governor.state(proposalId)), uint256(IGovernor.ProposalState.Executed));
+        assertEq(counter.count(), 1);
     }
 }
